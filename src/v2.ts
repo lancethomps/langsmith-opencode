@@ -118,6 +118,11 @@ export const setup: PluginDefinition["setup"] = async (ctx: Context) => {
 
     parents.set(sessionID, undefined);
     await snapshot(sessionID, { rootSessionID: rootOf(sessionID) });
+
+    // Flush on idle, as the V1 plugin does. A short-lived process (`opencode
+    // run`) exits before the SDK's batch timer fires, which would otherwise
+    // drop the runs that were just submitted.
+    await tracer.flush();
   };
 
   const controller = new AbortController();
@@ -130,6 +135,18 @@ export const setup: PluginDefinition["setup"] = async (ctx: Context) => {
           continue;
         }
 
+        // OpenCode 2 signals a finished turn with the execution events. The
+        // deprecated `session.idle` and `session.status` are kept as extra
+        // signals because they are still emitted in other flows.
+        if (
+          event.type === "session.execution.succeeded" ||
+          event.type === "session.execution.failed" ||
+          event.type === "session.execution.interrupted"
+        ) {
+          await onSessionSettled(event.data.sessionID);
+          continue;
+        }
+
         if (event.type === "session.idle") {
           await onSessionSettled(event.data.sessionID);
           continue;
@@ -139,6 +156,8 @@ export const setup: PluginDefinition["setup"] = async (ctx: Context) => {
           await onSessionSettled(event.data.sessionID);
           continue;
         }
+
+        if (event.type === "location.shutdown") await flush();
       }
     } catch (error) {
       if (!controller.signal.aborted) {
